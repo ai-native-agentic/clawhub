@@ -68,7 +68,7 @@ export function digestToHydratableSkill(digest: Doc<'skillSearchDigest'>): Hydra
   }
 }
 
-/** Insert or update the digest row for a skill. */
+/** Insert or update the digest row for a skill. Skips the write when no fields changed. */
 export async function upsertSkillSearchDigest(
   ctx: Pick<MutationCtx, 'db'>,
   fields: SkillSearchDigestFields,
@@ -78,10 +78,25 @@ export async function upsertSkillSearchDigest(
     .withIndex('by_skill', (q) => q.eq('skillId', fields.skillId))
     .unique()
   if (existing) {
+    if (!hasDigestChanged(existing, fields)) return
     await ctx.db.patch(existing._id, fields)
   } else {
     await ctx.db.insert('skillSearchDigest', fields)
   }
+}
+
+/** Compare new fields against existing row. Returns true if any field differs. */
+function hasDigestChanged(
+  existing: Doc<'skillSearchDigest'>,
+  fields: SkillSearchDigestFields,
+): boolean {
+  for (const key of Object.keys(fields)) {
+    const oldVal = (existing as Record<string, unknown>)[key]
+    const newVal = (fields as Record<string, unknown>)[key]
+    if (oldVal === newVal) continue
+    if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) return true
+  }
+  return false
 }
 
 /**
