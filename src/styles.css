@@ -1833,6 +1833,23 @@ code {
   overflow-x: auto;
 }
 
+.skill-owner-tools {
+  display: grid;
+  gap: 14px;
+}
+
+.skill-owner-tools-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
+}
+
+@media (max-width: 820px) {
+  .skill-owner-tools-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .skill-hero {
   gap: 14px;
 }

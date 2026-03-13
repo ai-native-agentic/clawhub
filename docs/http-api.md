@@ -119,6 +119,7 @@ Response:
 
 Notes:
 
+- Old slugs created by owner rename/merge flows resolve to the canonical skill.
 - `metadata.os`: OS restrictions declared in skill frontmatter (e.g. `["macos"]`, `["linux"]`). `null` if not declared.
 - `metadata.systems`: Nix system targets (e.g. `["aarch64-darwin", "x86_64-linux"]`). `null` if not declared.
 - `metadata` is `null` if the skill has no platform metadata.
@@ -247,6 +248,21 @@ Status codes:
 - `403`: forbidden
 - `404`: skill/user not found
 - `500`: internal server error
+
+### Owner slug management endpoints
+
+- `POST /api/v1/skills/{slug}/rename`
+  - Body: `{ "newSlug": "new-canonical-slug" }`
+  - Response: `{ "ok": true, "slug": "new-canonical-slug", "previousSlug": "old-slug" }`
+- `POST /api/v1/skills/{slug}/merge`
+  - Body: `{ "targetSlug": "canonical-target-slug" }`
+  - Response: `{ "ok": true, "sourceSlug": "old-slug", "targetSlug": "canonical-target-slug" }`
+
+Notes:
+
+- Both endpoints require API token auth and only work for the skill owner.
+- `rename` preserves the previous slug as a redirect alias.
+- `merge` hides the source listing and redirects the source slug to the target listing.
 
 ### Transfer ownership endpoints
 

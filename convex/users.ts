@@ -715,6 +715,67 @@ export const autobanMalwareAuthorInternal = internalMutation({
   },
 })
 
+export const placeUserUnderModerationInternal = internalMutation({
+  args: {
+    ownerUserId: v.id('users'),
+    slug: v.string(),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const target = await ctx.db.get(args.ownerUserId)
+    if (!target) return { ok: false, reason: 'user_not_found' as const }
+    if (target.deletedAt || target.deactivatedAt) {
+      return { ok: true, alreadyModerated: true as const, hiddenSkills: 0 }
+    }
+    if (target.role === 'admin' || target.role === 'moderator') {
+      console.log(`[moderation] Skipping ${target.handle ?? args.ownerUserId}: role=${target.role}`)
+      return { ok: false, reason: 'protected_role' as const }
+    }
+
+    const now = Date.now()
+    const alreadyModerated = Boolean(target.requiresModerationAt)
+    const moderationReason = `Auto-held for moderation after malicious upload (${args.reason})`
+
+    if (!alreadyModerated) {
+      await ctx.db.patch(args.ownerUserId, {
+        requiresModerationAt: now,
+        requiresModerationReason: moderationReason,
+        updatedAt: now,
+      })
+    }
+
+    const hideSkillsResult = (await ctx.runMutation(
+      internal.skills.applyUserModerationToOwnedSkillsBatchInternal,
+      {
+        ownerUserId: args.ownerUserId,
+        hiddenAt: now,
+        cursor: undefined,
+      },
+    )) as { hiddenCount?: number; scheduled?: boolean }
+
+    await ctx.db.insert('auditLogs', {
+      actorUserId: args.ownerUserId,
+      action: 'user.moderation.auto',
+      targetType: 'user',
+      targetId: args.ownerUserId,
+      metadata: {
+        trigger: 'static.malicious',
+        slug: args.slug,
+        reason: args.reason,
+        hiddenSkills: hideSkillsResult.hiddenCount ?? 0,
+      },
+      createdAt: now,
+    })
+
+    return {
+      ok: true as const,
+      alreadyModerated,
+      hiddenSkills: hideSkillsResult.hiddenCount ?? 0,
+      scheduledSkills: hideSkillsResult.scheduled ?? false,
+    }
+  },
+})
+
 async function softDeleteUserCommentsForBan(
   ctx: MutationCtx,
   args: { userId: Id<'users'>; deletedBy: Id<'users'>; deletedAt: number },

@@ -358,7 +358,7 @@ describe('search helpers', () => {
     expect(highDownloads).toBeGreaterThan(lowDownloads)
   })
 
-  it('uses digest doc instead of full skill doc in hydrateResults', async () => {
+  it('uses digest doc instead of full skill doc in hydrateResults but revalidates the owner', async () => {
     // Derive digest from makeSkillDoc so it stays in sync with schema changes.
     const skillDoc = makeSkillDoc({ id: 'skills:1', slug: 'digest-skill', displayName: 'Digest Skill' })
     const digestDoc = {
@@ -395,8 +395,19 @@ describe('search helpers', () => {
     const getMock = vi.fn(async (id: string) => {
       // Should NOT be called for skills:1 when digest exists
       if (id === 'skills:1') throw new Error('Should not read full skill doc')
-      // Should NOT be called for users:owner when digest has owner fields
-      if (id === 'users:owner') throw new Error('Should not read users doc')
+      if (id === 'users:owner') {
+        return {
+          _id: 'users:owner',
+          _creationTime: 1,
+          handle: 'owner',
+          name: 'Owner',
+          displayName: 'Owner',
+          image: undefined,
+          bio: undefined,
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+        }
+      }
       return null
     })
     const result = await hydrateResultsHandler(
@@ -425,6 +436,7 @@ describe('search helpers', () => {
     expect(result[0].skill.slug).toBe('digest-skill')
     expect(result[0].skill._id).toBe('skills:1')
     expect(result[0].ownerHandle).toBe('owner')
+    expect(getMock).toHaveBeenCalledWith('users:owner')
   })
 
   it('falls back to full skill doc when digest is missing', async () => {

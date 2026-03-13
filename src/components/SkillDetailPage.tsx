@@ -10,6 +10,7 @@ import { useAuthStatus } from '../lib/useAuthStatus'
 import { SkillCommentsPanel } from './SkillCommentsPanel'
 import { SkillDetailTabs } from './SkillDetailTabs'
 import { SkillHeader, type SkillModerationInfo } from './SkillHeader'
+import { SkillOwnershipPanel } from './SkillOwnershipPanel'
 import { SkillReportDialog } from './SkillReportDialog'
 import {
   buildSkillHref,
@@ -26,6 +27,8 @@ type SkillDetailPageProps = {
 }
 
 type SkillBySlugResult = {
+  requestedSlug?: string | null
+  resolvedSlug?: string | null
   skill: Doc<'skills'> | PublicSkill
   latestVersion: Doc<'skillVersions'> | null
   owner: Doc<'users'> | PublicUser | null
@@ -127,12 +130,18 @@ export function SkillDetailPage({
   )
 
   const canManage = canManageSkill(me, skill)
+  const isOwner = Boolean(me && skill && me._id === skill.ownerUserId)
+  const ownedSkills = useQuery(
+    api.skills.list,
+    isOwner && skill ? { ownerUserId: skill.ownerUserId, limit: 100 } : 'skip',
+  ) as Array<{ _id: Id<'skills'>; slug: string; displayName: string }> | undefined
 
   const ownerHandle = owner?.handle ?? owner?.name ?? null
   const ownerParam = ownerHandle ?? (owner?._id ? String(owner._id) : null)
   const wantsCanonicalRedirect = Boolean(
     ownerParam &&
-      (redirectToCanonical ||
+      ((result?.resolvedSlug && result.resolvedSlug !== slug) ||
+        redirectToCanonical ||
         (typeof canonicalOwner === 'string' && canonicalOwner && canonicalOwner !== ownerParam)),
   )
 
@@ -349,6 +358,16 @@ export function SkillDetailPage({
           clawdis={clawdis}
           osLabels={osLabels}
         />
+
+        {isOwner && skill ? (
+          <SkillOwnershipPanel
+            skillId={skill._id}
+            slug={skill.slug}
+            ownerHandle={ownerHandle}
+            ownerId={owner?._id ?? null}
+            ownedSkills={(ownedSkills ?? []).filter((entry) => entry._id !== skill._id)}
+          />
+        ) : null}
 
         {nixSnippet ? (
           <div className="card">

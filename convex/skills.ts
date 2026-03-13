@@ -106,6 +106,7 @@ const LOW_TRUST_ACCOUNT_AGE_MS = 30 * RATE_LIMIT_DAY_MS
 const MAX_MANUAL_OVERRIDE_NOTE_LENGTH = 1200
 const DEFAULT_STAFF_AUDIT_LOG_LIMIT = 10
 const MAX_STAFF_AUDIT_LOG_LIMIT = 50
+const USER_MODERATION_REASON = 'user.moderation'
 
 function buildStructuredModerationPatch(params: {
   staticScan?: Doc<'skillVersions'>['staticScan']
@@ -489,6 +490,137 @@ function buildSlugTakenErrorMessage(
   const url = buildConflictingSkillUrl(skill, owner)
   if (!url) return base
   return `${base} Existing skill: ${url}`
+}
+
+function buildAliasTakenErrorMessage(
+  skill: Doc<'skills'>,
+  owner: Doc<'users'> | null | undefined,
+) {
+  const base = 'Slug redirects to an existing skill. Choose a different slug.'
+  const url = buildConflictingSkillUrl(skill, owner)
+  if (!url) return base
+  return `${base} Existing skill: ${url}`
+}
+
+async function getSkillSlugAliasBySlug(
+  ctx: Pick<QueryCtx | MutationCtx, 'db'>,
+  slug: string,
+) {
+  return ctx.db
+    .query('skillSlugAliases')
+    .withIndex('by_slug', (q) => q.eq('slug', slug))
+    .unique()
+}
+
+async function listSkillSlugAliasesForSkill(
+  ctx: Pick<QueryCtx | MutationCtx, 'db'>,
+  skillId: Id<'skills'>,
+) {
+  return ctx.db
+    .query('skillSlugAliases')
+    .withIndex('by_skill', (q) => q.eq('skillId', skillId))
+    .collect()
+}
+
+async function resolveSkillBySlugOrAlias(
+  ctx: Pick<QueryCtx | MutationCtx, 'db'>,
+  slug: string,
+) {
+  const normalizedSlug = slug.trim().toLowerCase()
+  if (!normalizedSlug) {
+    return {
+      requestedSlug: normalizedSlug,
+      resolvedSlug: null,
+      skill: null,
+      alias: null,
+    }
+  }
+
+  const directSkill = await ctx.db
+    .query('skills')
+    .withIndex('by_slug', (q) => q.eq('slug', normalizedSlug))
+    .unique()
+  if (directSkill && !directSkill.softDeletedAt) {
+    return {
+      requestedSlug: normalizedSlug,
+      resolvedSlug: directSkill.slug,
+      skill: directSkill,
+      alias: null,
+    }
+  }
+
+  const alias = await getSkillSlugAliasBySlug(ctx, normalizedSlug)
+  if (!alias) {
+    return {
+      requestedSlug: normalizedSlug,
+      resolvedSlug: null,
+      skill: null,
+      alias: null,
+    }
+  }
+
+  const skill = await ctx.db.get(alias.skillId)
+  if (!skill || skill.softDeletedAt) {
+    return {
+      requestedSlug: normalizedSlug,
+      resolvedSlug: null,
+      skill: null,
+      alias,
+    }
+  }
+
+  return {
+    requestedSlug: normalizedSlug,
+    resolvedSlug: skill.slug,
+    skill,
+    alias,
+  }
+}
+
+async function repointSkillRelationships(
+  ctx: MutationCtx,
+  params: {
+    fromSkillId: Id<'skills'>
+    toSkillId: Id<'skills'>
+    toCanonicalSkillId: Id<'skills'>
+    targetVersion: Doc<'skillVersions'> | null
+    now: number
+  },
+) {
+  const canonicalRefs = await ctx.db
+    .query('skills')
+    .withIndex('by_canonical', (q) => q.eq('canonicalSkillId', params.fromSkillId))
+    .collect()
+  for (const related of canonicalRefs) {
+    await ctx.db.patch(related._id, {
+      canonicalSkillId: params.toCanonicalSkillId,
+      updatedAt: params.now,
+    })
+  }
+
+  const forkRefs = await ctx.db
+    .query('skills')
+    .withIndex('by_fork_of', (q) => q.eq('forkOf.skillId', params.fromSkillId))
+    .collect()
+  for (const related of forkRefs) {
+    await ctx.db.patch(related._id, {
+      canonicalSkillId: params.toCanonicalSkillId,
+      forkOf: related.forkOf
+        ? {
+            ...related.forkOf,
+            skillId: params.toSkillId,
+            version: params.targetVersion?.version ?? related.forkOf.version,
+            at: params.now,
+          }
+        : {
+            skillId: params.toSkillId,
+            kind: 'duplicate',
+            version: params.targetVersion?.version,
+            at: params.now,
+          },
+      updatedAt: params.now,
+    })
+  }
 }
 
 function normalizeScannerSuspiciousReason(reason: string | undefined) {
@@ -939,18 +1071,20 @@ async function buildPublicSkillEntries(
   >()
 
   const getOwnerInfo = (skillId: Id<'skills'>, ownerUserId: Id<'users'>) => {
-    const preResolved = opts?.preResolvedOwners?.get(skillId)
-    if (preResolved) return preResolved
     const cached = ownerInfoCache.get(ownerUserId)
     if (cached) return cached
     const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => {
-      if (!ownerDoc || ownerDoc.deletedAt || ownerDoc.deactivatedAt) {
+      const publicOwner = toPublicUser(ownerDoc)
+      if (!publicOwner) {
         return { ownerHandle: null, owner: null }
       }
+      const preResolved = opts?.preResolvedOwners?.get(skillId)
       return {
         ownerHandle:
-          ownerDoc.handle ?? (ownerDoc._id ? String(ownerDoc._id) : null),
-        owner: toPublicUser(ownerDoc),
+          preResolved?.ownerHandle ??
+          publicOwner.handle ??
+          String(publicOwner._id),
+        owner: preResolved?.owner ?? publicOwner,
       }
     })
     ownerInfoCache.set(ownerUserId, ownerPromise)
@@ -985,7 +1119,7 @@ async function buildPublicSkillEntries(
     }),
   )
 
-  return entries.filter((entry): entry is PublicSkillEntry => entry !== null)
+  return entries.filter(Boolean) as PublicSkillEntry[]
 }
 
 async function filterSkillsByActiveOwner(
@@ -1177,11 +1311,9 @@ async function removeSkillBadge(
 export const getBySlug = query({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
-    const skill = await ctx.db
-      .query('skills')
-      .withIndex('by_slug', (q) => q.eq('slug', args.slug))
-      .unique()
-    if (!skill || skill.softDeletedAt) return null
+    const resolved = await resolveSkillBySlugOrAlias(ctx, args.slug)
+    const skill = resolved.skill
+    if (!skill) return null
 
     const userId = await getAuthUserId(ctx)
     const isOwner = Boolean(userId && userId === skill.ownerUserId)
@@ -1269,6 +1401,8 @@ export const getBySlug = query({
       : null
 
     return {
+      requestedSlug: resolved.requestedSlug,
+      resolvedSlug: resolved.resolvedSlug,
       skill: skillData,
       latestVersion,
       owner,
@@ -1324,6 +1458,22 @@ export const checkSlugAvailability = query({
       .unique()
 
     if (!skill) {
+      const alias = await getSkillSlugAliasBySlug(ctx, slug)
+      if (alias) {
+        const aliasedSkill = await ctx.db.get(alias.skillId)
+        const owner = aliasedSkill
+          ? await ctx.db.get(aliasedSkill.ownerUserId)
+          : null
+        return {
+          available: false,
+          reason: 'taken' as const,
+          message: aliasedSkill
+            ? buildAliasTakenErrorMessage(aliasedSkill, owner)
+            : 'Slug redirects to an existing skill. Choose a different slug.',
+          url: aliasedSkill ? buildConflictingSkillUrl(aliasedSkill, owner) : null,
+        }
+      }
+
       const reservation = await getLatestActiveReservedSlug(ctx, slug)
       if (
         reservation &&
@@ -1417,10 +1567,8 @@ export const getBySlugForStaff = query({
 
     const auditLogLimit = clampStaffAuditLogLimit(args.auditLogLimit)
 
-    const skill = await ctx.db
-      .query('skills')
-      .withIndex('by_slug', (q) => q.eq('slug', args.slug))
-      .unique()
+    const resolved = await resolveSkillBySlugOrAlias(ctx, args.slug)
+    const skill = resolved.skill
     if (!skill) return null
 
     const latestVersion = skill.latestVersionId
@@ -1467,6 +1615,8 @@ export const getBySlugForStaff = query({
       : null
 
     return {
+      requestedSlug: resolved.requestedSlug,
+      resolvedSlug: resolved.resolvedSlug,
       skill: { ...skill, badges },
       latestVersion,
       owner,
@@ -1534,10 +1684,8 @@ export const getReservedSlugInternal = internalQuery({
 export const getSkillBySlugInternal = internalQuery({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
-    return ctx.db
-      .query('skills')
-      .withIndex('by_slug', (q) => q.eq('slug', args.slug))
-      .unique()
+    const resolved = await resolveSkillBySlugOrAlias(ctx, args.slug)
+    return resolved.skill
   },
 })
 
@@ -3373,6 +3521,59 @@ export const applyBanToOwnedSkillsBatchInternal = internalMutation({
   },
 })
 
+export const applyUserModerationToOwnedSkillsBatchInternal = internalMutation({
+  args: {
+    ownerUserId: v.id('users'),
+    hiddenAt: v.number(),
+    hiddenBy: v.optional(v.id('users')),
+    cursor: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query('skills')
+      .withIndex('by_owner', (q) => q.eq('ownerUserId', args.ownerUserId))
+      .order('desc')
+      .paginate({
+        cursor: args.cursor ?? null,
+        numItems: BAN_USER_SKILLS_BATCH_SIZE,
+      })
+
+    let hiddenCount = 0
+    for (const skill of page) {
+      const nextReason =
+        skill.moderationVerdict === 'malicious' ? skill.moderationReason : USER_MODERATION_REASON
+      const nextStatus = 'hidden'
+      const patch: Partial<Doc<'skills'>> = {
+        moderationStatus: nextStatus,
+        moderationReason: nextReason,
+        hiddenAt: args.hiddenAt,
+        hiddenBy: args.hiddenBy,
+        lastReviewedAt: args.hiddenAt,
+        updatedAt: args.hiddenAt,
+        isSuspicious: computeIsSuspicious({
+          moderationFlags: skill.moderationFlags,
+          moderationReason: nextReason,
+        }),
+      }
+
+      const nextSkill = { ...skill, ...patch }
+      await ctx.db.patch(skill._id, patch)
+      await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill)
+      hiddenCount += 1
+    }
+
+    scheduleNextBatchIfNeeded(
+      ctx.scheduler,
+      internal.skills.applyUserModerationToOwnedSkillsBatchInternal,
+      args,
+      isDone,
+      continueCursor,
+    )
+
+    return { ok: true as const, hiddenCount, scheduled: !isDone }
+  },
+})
+
 export const restoreOwnedSkillsForUnbanBatchInternal = internalMutation({
   args: {
     ownerUserId: v.id('users'),
@@ -4000,11 +4201,9 @@ export const resolveVersionByHash = query({
     const hash = args.hash.trim().toLowerCase()
     if (!slug || !/^[a-f0-9]{64}$/.test(hash)) return null
 
-    const skill = await ctx.db
-      .query('skills')
-      .withIndex('by_slug', (q) => q.eq('slug', slug))
-      .unique()
-    if (!skill || skill.softDeletedAt) return null
+    const resolved = await resolveSkillBySlugOrAlias(ctx, slug)
+    const skill = resolved.skill
+    if (!skill) return null
 
     const latestVersion = skill.latestVersionId
       ? await ctx.db.get(skill.latestVersionId)
@@ -4385,6 +4584,294 @@ export const changeOwner = mutation({
     })
   },
 })
+
+export const renameOwnedSkill = mutation({
+  args: {
+    slug: v.string(),
+    newSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx)
+    return renameOwnedSkillByActor(ctx, user._id, args.slug, args.newSlug)
+  },
+})
+
+export const mergeOwnedSkillIntoCanonical = mutation({
+  args: {
+    sourceSlug: v.string(),
+    targetSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx)
+    return mergeOwnedSkillIntoCanonicalByActor(
+      ctx,
+      user._id,
+      args.sourceSlug,
+      args.targetSlug,
+    )
+  },
+})
+
+export const renameOwnedSkillInternal = internalMutation({
+  args: {
+    actorUserId: v.id('users'),
+    slug: v.string(),
+    newSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return renameOwnedSkillByActor(
+      ctx,
+      args.actorUserId,
+      args.slug,
+      args.newSlug,
+    )
+  },
+})
+
+export const mergeOwnedSkillIntoCanonicalInternal = internalMutation({
+  args: {
+    actorUserId: v.id('users'),
+    sourceSlug: v.string(),
+    targetSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return mergeOwnedSkillIntoCanonicalByActor(
+      ctx,
+      args.actorUserId,
+      args.sourceSlug,
+      args.targetSlug,
+    )
+  },
+})
+
+async function renameOwnedSkillByActor(
+  ctx: MutationCtx,
+  actorUserId: Id<'users'>,
+  sourceSlugArg: string,
+  newSlugArg: string,
+) {
+  const user = await ctx.db.get(actorUserId)
+  if (!user || user.deletedAt || user.deactivatedAt) {
+    throw new ConvexError('Forbidden')
+  }
+
+  const now = Date.now()
+  const sourceSlug = sourceSlugArg.trim().toLowerCase()
+  const newSlug = newSlugArg.trim().toLowerCase()
+  if (!sourceSlug) throw new ConvexError('Current slug required')
+  if (!newSlug) throw new ConvexError('New slug required')
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(newSlug)) {
+    throw new ConvexError(
+      'Invalid slug. Use lowercase letters, numbers, and hyphens only.',
+    )
+  }
+
+  const resolved = await resolveSkillBySlugOrAlias(ctx, sourceSlug)
+  const skill = resolved.skill
+  if (!skill || skill.softDeletedAt) throw new ConvexError('Skill not found')
+  if (skill.ownerUserId !== actorUserId) throw new ConvexError('Forbidden')
+  if (skill.slug === newSlug) {
+    return { ok: true as const, slug: skill.slug, previousSlug: skill.slug }
+  }
+
+  const existingSkill = await ctx.db
+    .query('skills')
+    .withIndex('by_slug', (q) => q.eq('slug', newSlug))
+    .unique()
+  if (existingSkill && existingSkill._id !== skill._id) {
+    const owner = await ctx.db.get(existingSkill.ownerUserId)
+    if (existingSkill.ownerUserId === actorUserId) {
+      throw new ConvexError(
+        'Slug already belongs to one of your skills. Use merge instead.',
+      )
+    }
+    throw new ConvexError(buildSlugTakenErrorMessage(existingSkill, owner))
+  }
+
+  const existingAlias = await getSkillSlugAliasBySlug(ctx, newSlug)
+  if (existingAlias && existingAlias.skillId !== skill._id) {
+    const aliasSkill = await ctx.db.get(existingAlias.skillId)
+    const owner = aliasSkill ? await ctx.db.get(aliasSkill.ownerUserId) : null
+    throw new ConvexError(
+      aliasSkill
+        ? buildAliasTakenErrorMessage(aliasSkill, owner)
+        : 'Slug redirects to an existing skill. Choose a different slug.',
+    )
+  }
+
+  const reservation = await getLatestActiveReservedSlug(ctx, newSlug)
+  if (
+    reservation &&
+    reservation.expiresAt > now &&
+    reservation.originalOwnerUserId !== actorUserId
+  ) {
+    throw new ConvexError(
+      formatReservedSlugCooldownMessage(newSlug, reservation.expiresAt),
+    )
+  }
+
+  if (existingAlias && existingAlias.skillId === skill._id) {
+    await ctx.db.delete(existingAlias._id)
+  }
+
+  await ctx.db.patch(skill._id, {
+    slug: newSlug,
+    updatedAt: now,
+  })
+  await releaseActiveReservationsForSlug(ctx, newSlug, now)
+
+  const previousAlias = await getSkillSlugAliasBySlug(ctx, skill.slug)
+  if (previousAlias) {
+    await ctx.db.patch(previousAlias._id, {
+      skillId: skill._id,
+      ownerUserId: actorUserId,
+      updatedAt: now,
+    })
+  } else {
+    await ctx.db.insert('skillSlugAliases', {
+      slug: skill.slug,
+      skillId: skill._id,
+      ownerUserId: actorUserId,
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  await ctx.db.insert('auditLogs', {
+    actorUserId,
+    action: 'skill.slug.rename',
+    targetType: 'skill',
+    targetId: skill._id,
+    metadata: {
+      from: skill.slug,
+      to: newSlug,
+    },
+    createdAt: now,
+  })
+
+  return { ok: true as const, slug: newSlug, previousSlug: skill.slug }
+}
+
+async function mergeOwnedSkillIntoCanonicalByActor(
+  ctx: MutationCtx,
+  actorUserId: Id<'users'>,
+  sourceSlugArg: string,
+  targetSlugArg: string,
+) {
+  const user = await ctx.db.get(actorUserId)
+  if (!user || user.deletedAt || user.deactivatedAt) {
+    throw new ConvexError('Forbidden')
+  }
+
+  const now = Date.now()
+  const sourceSlug = sourceSlugArg.trim().toLowerCase()
+  const targetSlug = targetSlugArg.trim().toLowerCase()
+  if (!sourceSlug || !targetSlug) {
+    throw new ConvexError('Source slug and target slug are required')
+  }
+  if (sourceSlug === targetSlug) {
+    throw new ConvexError('Source and target must be different skills')
+  }
+
+  const source = await ctx.db
+    .query('skills')
+    .withIndex('by_slug', (q) => q.eq('slug', sourceSlug))
+    .unique()
+  if (!source || source.softDeletedAt) throw new ConvexError('Source skill not found')
+
+  const targetResolved = await resolveSkillBySlugOrAlias(ctx, targetSlug)
+  const target = targetResolved.skill
+  if (!target || target.softDeletedAt) throw new ConvexError('Target skill not found')
+  if (source._id === target._id) {
+    throw new ConvexError('Source and target must be different skills')
+  }
+  if (source.ownerUserId !== actorUserId || target.ownerUserId !== actorUserId) {
+    throw new ConvexError('Forbidden')
+  }
+
+  const targetLatestVersion = target.latestVersionId
+    ? await ctx.db.get(target.latestVersionId)
+    : null
+  const targetCanonicalSkillId = target.canonicalSkillId ?? target._id
+
+  const aliases = await listSkillSlugAliasesForSkill(ctx, source._id)
+  for (const alias of aliases) {
+    if (alias.slug === target.slug) {
+      await ctx.db.delete(alias._id)
+      continue
+    }
+    await ctx.db.patch(alias._id, {
+      skillId: target._id,
+      ownerUserId: target.ownerUserId,
+      updatedAt: now,
+    })
+  }
+
+  const sourceAlias = await getSkillSlugAliasBySlug(ctx, source.slug)
+  if (sourceAlias) {
+    await ctx.db.patch(sourceAlias._id, {
+      skillId: target._id,
+      ownerUserId: target.ownerUserId,
+      updatedAt: now,
+    })
+  } else {
+    await ctx.db.insert('skillSlugAliases', {
+      slug: source.slug,
+      skillId: target._id,
+      ownerUserId: target.ownerUserId,
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  await repointSkillRelationships(ctx, {
+    fromSkillId: source._id,
+    toSkillId: target._id,
+    toCanonicalSkillId: targetCanonicalSkillId,
+    targetVersion: targetLatestVersion,
+    now,
+  })
+
+  const patch: Partial<Doc<'skills'>> = {
+    canonicalSkillId: targetCanonicalSkillId,
+    forkOf: {
+      skillId: target._id,
+      kind: 'duplicate',
+      version: targetLatestVersion?.version,
+      at: now,
+    },
+    softDeletedAt: now,
+    moderationStatus: 'hidden',
+    moderationReason: 'owner.merged',
+    hiddenAt: now,
+    hiddenBy: actorUserId,
+    lastReviewedAt: now,
+    updatedAt: now,
+  }
+  const nextSkill = { ...source, ...patch }
+  await ctx.db.patch(source._id, patch)
+  await adjustGlobalPublicCountForSkillChange(ctx, source, nextSkill)
+  await setSkillEmbeddingsSoftDeleted(ctx, source._id, true, now)
+
+  await ctx.db.insert('auditLogs', {
+    actorUserId,
+    action: 'skill.merge',
+    targetType: 'skill',
+    targetId: source._id,
+    metadata: {
+      from: source.slug,
+      to: target.slug,
+      targetSkillId: target._id,
+    },
+    createdAt: now,
+  })
+
+  return {
+    ok: true as const,
+    sourceSlug: source.slug,
+    targetSlug: target.slug,
+  }
+}
 
 async function transferSkillOwnershipAndEmbeddings(
   ctx: MutationCtx,
@@ -4888,6 +5375,21 @@ export const insertVersion = internalMutation({
       .withIndex('by_slug', (q) => q.eq('slug', args.slug))
       .unique()
 
+    if (!skill) {
+      const alias = await getSkillSlugAliasBySlug(ctx, args.slug)
+      if (alias) {
+        const aliasedSkill = await ctx.db.get(alias.skillId)
+        const owner = aliasedSkill
+          ? await ctx.db.get(aliasedSkill.ownerUserId)
+          : null
+        throw new ConvexError(
+          aliasedSkill
+            ? buildAliasTakenErrorMessage(aliasedSkill, owner)
+            : 'Slug redirects to an existing skill. Choose a different slug.',
+        )
+      }
+    }
+
     if (skill && skill.ownerUserId !== userId) {
       // Fallback: Convex Auth can create duplicate `users` records. Heal ownership ONLY
       // when the underlying GitHub identity matches (authAccounts.providerAccountId).
@@ -4930,18 +5432,33 @@ export const insertVersion = internalMutation({
       user.role === 'admin' ||
       user.role === 'moderator',
     )
-    const initialModerationStatus =
-      isTrustedPublisher && !isQualityQuarantine ? 'active' : 'hidden'
-
-    const moderationReason = isQualityQuarantine
-      ? 'quality.low'
-      : 'pending.scan'
-    const moderationNotes = isQualityQuarantine
-      ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
-      : undefined
     const staticSnapshot = buildModerationSnapshot({
       staticScan: args.staticScan,
     })
+    const isPublisherUnderModeration = Boolean(user.requiresModerationAt)
+    const isStaticMalicious = staticSnapshot.verdict === 'malicious'
+    const initialModerationStatus =
+      isStaticMalicious ||
+      isPublisherUnderModeration ||
+      !(isTrustedPublisher && !isQualityQuarantine)
+        ? 'hidden'
+        : 'active'
+
+    const moderationReason = isStaticMalicious
+      ? 'scanner.static.malicious'
+      : isQualityQuarantine
+        ? 'quality.low'
+        : isPublisherUnderModeration
+          ? USER_MODERATION_REASON
+          : 'pending.scan'
+    const moderationNotes = isStaticMalicious
+      ? 'Auto-hidden by static malware detection. Manual moderation review required.'
+      : isQualityQuarantine
+        ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
+        : isPublisherUnderModeration
+          ? (user.requiresModerationReason ??
+            'Publisher is currently under manual moderation review.')
+          : undefined
 
     const qualityRecord = qualityAssessment
       ? {
@@ -5191,6 +5708,16 @@ export const insertVersion = internalMutation({
     const nextSkill = { ...skill, ...patch }
     await ctx.db.patch(skill._id, patch)
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill)
+
+    if (moderationSnapshot.verdict === 'malicious' && skill.ownerUserId) {
+      await ctx.scheduler.runAfter(0, internal.users.placeUserUnderModerationInternal, {
+        ownerUserId: skill.ownerUserId,
+        slug: skill.slug,
+        reason:
+          moderationSnapshot.reasonCodes.find((code) => code.startsWith('malicious.')) ??
+          'malicious.static_scan',
+      })
+    }
 
     const badgeMap = await getSkillBadgeMap(ctx, skill._id)
     const isApproved = Boolean(badgeMap.redactionApproved)

@@ -262,6 +262,18 @@ export const ApiV1DeleteResponseSchema = type({
   ok: 'true',
 })
 
+export const ApiV1SkillRenameResponseSchema = type({
+  ok: 'true',
+  slug: 'string',
+  previousSlug: 'string',
+})
+
+export const ApiV1SkillMergeResponseSchema = type({
+  ok: 'true',
+  sourceSlug: 'string',
+  targetSlug: 'string',
+})
+
 export const ApiV1TransferRequestResponseSchema = type({
   ok: 'true',
   transferId: 'string',

@@ -49,6 +49,11 @@ read_when:
   - `moderationSummary`, engine version, evaluation timestamp, source version id
 - Structured moderation is rebuilt from current signals instead of appending stale scanner codes.
 - Legacy moderation flags remain in sync for existing public visibility and suspicious-skill filtering.
+- Static malware detection now hard-blocks install prompts that tell users to paste obfuscated shell payloads
+  (for example base64-decoded `curl|bash` terminal commands). When triggered:
+  - the uploaded skill is hidden immediately
+  - the uploader is placed into manual moderation
+  - all owned skills are hidden until staff review
 
 ## AI comment scam backfill
 

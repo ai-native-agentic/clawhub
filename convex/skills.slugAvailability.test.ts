@@ -36,6 +36,8 @@ const checkSlugAvailabilityHandler = (
 
 function createCtx(options: {
   skill: SkillDoc | null
+  alias?: { _id: string; slug: string; skillId: string } | null
+  aliasedSkill?: SkillDoc | null
   reservation?: ReservationDoc | null
   owner?: { _id: string; handle?: string | null; deletedAt?: number; deactivatedAt?: number } | null
   callerId?: string
@@ -50,6 +52,7 @@ function createCtx(options: {
       if (id === callerId) {
         return { _id: callerId, deletedAt: undefined, deactivatedAt: undefined }
       }
+      if (options.aliasedSkill && id === options.aliasedSkill._id) return options.aliasedSkill
       if (options.owner && id === options.owner._id) return options.owner
       return null
     }),
@@ -74,6 +77,16 @@ function createCtx(options: {
               order: () => ({
                 take: async () => (options.reservation ? [options.reservation] : []),
               }),
+            }
+          },
+        }
+      }
+      if (table === 'skillSlugAliases') {
+        return {
+          withIndex: (name: string) => {
+            if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+            return {
+              unique: async () => options.alias ?? null,
             }
           },
         }
@@ -546,6 +559,49 @@ describe('skills.checkSlugAvailability', () => {
       reason: 'available',
       message: null,
       url: null,
+    })
+  })
+
+  it('returns taken for alias slugs with canonical URL', async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue('users:caller' as never)
+
+    const result = (await checkSlugAvailabilityHandler(
+      createCtx({
+        skill: null,
+        alias: {
+          _id: 'skillSlugAliases:1',
+          slug: 'demo-old',
+          skillId: 'skills:target',
+        },
+        aliasedSkill: {
+          _id: 'skills:target',
+          slug: 'demo',
+          ownerUserId: 'users:owner',
+          softDeletedAt: undefined,
+          moderationStatus: 'active',
+          moderationFlags: undefined,
+        },
+        owner: {
+          _id: 'users:owner',
+          handle: 'alice',
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+        },
+      }) as never,
+      { slug: 'demo-old' } as never,
+    )) as {
+      available: boolean
+      reason: string
+      message: string
+      url: string | null
+    }
+
+    expect(result).toEqual({
+      available: false,
+      reason: 'taken',
+      message:
+        'Slug redirects to an existing skill. Choose a different slug. Existing skill: /alice/demo',
+      url: '/alice/demo',
     })
   })
 })

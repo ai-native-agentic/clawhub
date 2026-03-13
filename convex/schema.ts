@@ -30,6 +30,8 @@ const users = defineTable({
   githubFetchedAt: v.optional(v.number()),
   githubProfileSyncedAt: v.optional(v.number()),
   trustedPublisher: v.optional(v.boolean()),
+  requiresModerationAt: v.optional(v.number()),
+  requiresModerationReason: v.optional(v.string()),
   deactivatedAt: v.optional(v.number()),
   purgedAt: v.optional(v.number()),
   deletedAt: v.optional(v.number()),
@@ -237,6 +239,17 @@ const skills = defineTable({
     'statsInstallsAllTime',
     'updatedAt',
   ])
+
+const skillSlugAliases = defineTable({
+  slug: v.string(),
+  skillId: v.id('skills'),
+  ownerUserId: v.id('users'),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index('by_slug', ['slug'])
+  .index('by_skill', ['skillId'])
+  .index('by_owner', ['ownerUserId'])
 
 const souls = defineTable({
   slug: v.string(),
@@ -829,6 +842,7 @@ export default defineSchema({
   ...authTables,
   users,
   skills,
+  skillSlugAliases,
   souls,
   skillVersions,
   soulVersions,

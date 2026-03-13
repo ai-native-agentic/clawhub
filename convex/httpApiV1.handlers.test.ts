@@ -1897,6 +1897,68 @@ describe('httpApiV1 handlers', () => {
     expect(response.status).toBe(404)
   })
 
+  it('rename endpoint forwards to renameOwnedSkillInternal', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true, slug: 'demo-new', previousSlug: 'demo' }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/rename', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ newSlug: 'demo-new' }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: 'users:1',
+        slug: 'demo',
+        newSlug: 'demo-new',
+      }),
+    )
+  })
+
+  it('merge endpoint forwards to mergeOwnedSkillIntoCanonicalInternal', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true, sourceSlug: 'demo-old', targetSlug: 'demo' }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills/demo-old/merge', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ targetSlug: 'demo' }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: 'users:1',
+        sourceSlug: 'demo-old',
+        targetSlug: 'demo',
+      }),
+    )
+  })
+
   it('transfer list returns incoming transfers', async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValue({
       userId: 'users:1',

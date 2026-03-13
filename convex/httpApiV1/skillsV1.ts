@@ -889,6 +889,15 @@ function transferErrorToResponse(error: unknown, headers: HeadersInit) {
   return text(message, 400, headers)
 }
 
+function ownershipErrorToResponse(error: unknown, headers: HeadersInit) {
+  const message = error instanceof Error ? error.message : 'Skill update failed'
+  const lower = message.toLowerCase()
+  if (lower.includes('unauthorized')) return text('Unauthorized', 401, headers)
+  if (lower.includes('forbidden')) return text('Forbidden', 403, headers)
+  if (lower.includes('not found')) return text(message, 404, headers)
+  return text(message, 400, headers)
+}
+
 async function resolveTransferContext(
   ctx: ActionCtx,
   request: Request,
@@ -998,15 +1007,71 @@ async function handleSkillsTransferPost(
   return text('Not found', 404, headers)
 }
 
+async function handleSkillRenamePost(
+  ctx: ActionCtx,
+  request: Request,
+  slug: string,
+  headers: HeadersInit,
+) {
+  const auth = await requireApiTokenUserOrResponse(ctx, request, headers)
+  if (!auth.ok) return auth.response
+
+  const parsed = await parseJsonPayload(request, headers)
+  if (!parsed.ok) return parsed.response
+  const newSlug = typeof parsed.payload.newSlug === 'string' ? parsed.payload.newSlug : ''
+  if (!newSlug.trim()) return text('newSlug required', 400, headers)
+
+  try {
+    const result = await ctx.runMutation(internal.skills.renameOwnedSkillInternal, {
+      actorUserId: auth.userId,
+      slug,
+      newSlug,
+    })
+    return json(result, 200, headers)
+  } catch (error) {
+    return ownershipErrorToResponse(error, headers)
+  }
+}
+
+async function handleSkillMergePost(
+  ctx: ActionCtx,
+  request: Request,
+  slug: string,
+  headers: HeadersInit,
+) {
+  const auth = await requireApiTokenUserOrResponse(ctx, request, headers)
+  if (!auth.ok) return auth.response
+
+  const parsed = await parseJsonPayload(request, headers)
+  if (!parsed.ok) return parsed.response
+  const targetSlug =
+    typeof parsed.payload.targetSlug === 'string' ? parsed.payload.targetSlug : ''
+  if (!targetSlug.trim()) return text('targetSlug required', 400, headers)
+
+  try {
+    const result = await ctx.runMutation(
+      internal.skills.mergeOwnedSkillIntoCanonicalInternal,
+      {
+        actorUserId: auth.userId,
+        sourceSlug: slug,
+        targetSlug,
+      },
+    )
+    return json(result, 200, headers)
+  } catch (error) {
+    return ownershipErrorToResponse(error, headers)
+  }
+}
+
 export async function skillsPostRouterV1Handler(ctx: ActionCtx, request: Request) {
   const rate = await applyRateLimit(ctx, request, 'write')
   if (!rate.ok) return rate.response
 
   const segments = getPathSegments(request, '/api/v1/skills/')
   const action = segments[1] ?? ''
+  const slug = segments[0]?.trim().toLowerCase() ?? ''
 
   if (segments.length === 2 && action === 'undelete') {
-    const slug = segments[0]?.trim().toLowerCase() ?? ''
     try {
       const { userId } = await requireApiTokenUser(ctx, request)
       await ctx.runMutation(internal.skills.setSkillSoftDeletedInternal, {
@@ -1022,6 +1087,16 @@ export async function skillsPostRouterV1Handler(ctx: ActionCtx, request: Request
 
   if (action === 'transfer') {
     return handleSkillsTransferPost(ctx, request, segments, rate.headers)
+  }
+
+  if (segments.length === 2 && action === 'rename') {
+    if (!slug) return text('Slug required', 400, rate.headers)
+    return handleSkillRenamePost(ctx, request, slug, rate.headers)
+  }
+
+  if (segments.length === 2 && action === 'merge') {
+    if (!slug) return text('Slug required', 400, rate.headers)
+    return handleSkillMergePost(ctx, request, slug, rate.headers)
   }
 
   return text('Not found', 404, rate.headers)

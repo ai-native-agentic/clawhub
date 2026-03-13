@@ -13,6 +13,7 @@ import {
 } from './cli/commands/delete.js'
 import { cmdInspect } from './cli/commands/inspect.js'
 import { cmdBanUser, cmdSetRole } from './cli/commands/moderation.js'
+import { cmdMergeSkill, cmdRenameSkill } from './cli/commands/ownership.js'
 import { cmdPublish } from './cli/commands/publish.js'
 import {
   cmdExplore,
@@ -321,6 +322,30 @@ program
   .action(async (slug, options) => {
     const opts = await resolveGlobalOpts()
     await cmdUnhideSkill(opts, slug, options, isInputAllowed())
+  })
+
+const skill = program.command('skill').description('Manage published skills')
+
+skill
+  .command('rename')
+  .description('Rename a published skill and keep the old slug as a redirect')
+  .argument('<slug>', 'Current skill slug')
+  .argument('<new-slug>', 'New canonical slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, newSlug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdRenameSkill(opts, slug, newSlug, options, isInputAllowed())
+  })
+
+skill
+  .command('merge')
+  .description('Merge one owned skill into another and redirect the old slug')
+  .argument('<source-slug>', 'Source skill slug')
+  .argument('<target-slug>', 'Target canonical slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (sourceSlug, targetSlug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdMergeSkill(opts, sourceSlug, targetSlug, options, isInputAllowed())
   })
 
 program

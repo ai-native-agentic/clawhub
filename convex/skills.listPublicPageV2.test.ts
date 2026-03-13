@@ -369,7 +369,7 @@ describe('skills.listPublicPageV2', () => {
     expect(getMock).toHaveBeenCalledWith('skillVersions:1')
   })
 
-  it('skips db.get for owner when digest has ownerHandle', async () => {
+  it('revalidates the owner even when digest has ownerHandle', async () => {
     const skill = makeSkill('skills:s1', 's1', 'users:1', 'skillVersions:1')
     const paginateMock = vi.fn().mockResolvedValue({
       page: [skill],
@@ -379,7 +379,7 @@ describe('skills.listPublicPageV2', () => {
       splitCursor: null,
     })
     const getMock = vi.fn(async (id: string) => {
-      if (id.startsWith('users:')) throw new Error('Should not read users')
+      if (id === 'users:1') return makeUser(id)
       if (id.startsWith('skillVersions:')) return makeVersion(id)
       return null
     })
@@ -404,8 +404,7 @@ describe('skills.listPublicPageV2', () => {
 
     expect(result.page).toHaveLength(1)
     expect(result.page[0]?.skill.slug).toBe('s1')
-    // Should NOT have called db.get for users
-    expect(getMock).not.toHaveBeenCalledWith('users:1')
+    expect(getMock).toHaveBeenCalledWith('users:1')
   })
 
   it('falls back to db.get for owner when digest lacks ownerHandle', async () => {

@@ -28,6 +28,8 @@ onlycrabs.ai is the **SOUL.md registry**: publish and share system lore the same
 
 - Browse skills + render their `SKILL.md`.
 - Publish new skill versions with changelogs + tags (including `latest`).
+- Rename an owned skill without breaking old links or installs.
+- Merge duplicate owned skills into one canonical slug.
 - Browse souls + render their `SOUL.md`.
 - Publish new soul versions with changelogs + tags.
 - Search via embeddings (vector index) instead of brittle keywords.
@@ -56,6 +58,7 @@ Common CLI flows:
 - Manage local installs: `clawhub install <slug>`, `clawhub uninstall <slug>`, `clawhub list`, `clawhub update --all`
 - Inspect without installing: `clawhub inspect <slug>`
 - Publish/sync: `clawhub publish <path>`, `clawhub sync`
+- Canonicalize owned skills: `clawhub skill rename <slug> <new-slug>`, `clawhub skill merge <source> <target>`
 
 Docs: [`docs/quickstart.md`](docs/quickstart.md), [`docs/cli.md`](docs/cli.md).
 
@@ -65,6 +68,8 @@ Docs: [`docs/quickstart.md`](docs/quickstart.md), [`docs/cli.md`](docs/cli.md).
 - Uploaded registry skills use soft-delete/restore (`clawhub delete <slug>` / `clawhub undelete <slug>` or API equivalents).
 - Soft-delete/restore is allowed for the skill owner, moderators, and admins.
 - Hard delete is admin-only (management tools / ban flows).
+- Owner rename keeps the old slug as a redirect alias.
+- Owner merge hides the source listing and redirects the old slug to the canonical target.
 
 
 ## Telemetry

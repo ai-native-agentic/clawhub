@@ -126,6 +126,14 @@ describe('skills anti-spam guards', () => {
             },
           }
         }
+        if (table === 'skillSlugAliases') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+              return { unique: async () => null }
+            },
+          }
+        }
         throw new Error(`unexpected table ${table}`)
       }),
       normalizeId: vi.fn(),
@@ -403,6 +411,26 @@ describe('skills anti-spam guards', () => {
             },
           }
         }
+        if (table === 'skillSlugAliases') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        if (table === 'skillSlugAliases') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
         throw new Error(`unexpected table ${table}`)
       }),
       patch,
@@ -503,6 +531,359 @@ describe('skills anti-spam guards', () => {
         moderationStatus: 'active',
         moderationReason: 'scanner.vt.suspicious',
         moderationFlags: ['flagged.suspicious'],
+      }),
+    )
+  })
+
+  it('hides static-malicious publishes and places the owner under moderation', async () => {
+    const storedSkills = new Map<string, Record<string, unknown>>()
+    const storedDigests = new Map<string, Record<string, unknown>>()
+    const patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
+      if (storedSkills.has(id)) {
+        storedSkills.set(id, { ...storedSkills.get(id), ...value })
+      }
+      const digest = Array.from(storedDigests.values()).find((entry) => entry.skillId === id)
+      if (digest) {
+        Object.assign(digest, value)
+      }
+    })
+    const insert = vi.fn(async (table: string, value: Record<string, unknown>) => {
+      if (table === 'skills') {
+        storedSkills.set('skills:1', { _id: 'skills:1', _creationTime: 1, ...value })
+        return 'skills:1'
+      }
+      if (table === 'skillSearchDigest') {
+        storedDigests.set('skillSearchDigest:1', { _id: 'skillSearchDigest:1', ...value })
+        return 'skillSearchDigest:1'
+      }
+      if (table === 'skillVersions') return 'skillVersions:1'
+      if (table === 'skillEmbeddings') return 'skillEmbeddings:1'
+      if (table === 'embeddingSkillMap') return 'embeddingSkillMap:1'
+      if (table === 'skillVersionFingerprints') return 'skillVersionFingerprints:1'
+      throw new Error(`unexpected insert table ${table}`)
+    })
+    const runAfter = vi.fn()
+    const db = {
+      get: vi.fn(async (tableOrId: string, maybeId?: string) => {
+        const key = String(maybeId ?? tableOrId)
+        if (storedSkills.has(key)) return storedSkills.get(key)
+        if (key === 'users:owner') {
+          return {
+            _id: 'users:owner',
+            _creationTime: Date.now() - 60 * 24 * 60 * 60 * 1000,
+            createdAt: Date.now() - 60 * 24 * 60 * 60 * 1000,
+            deletedAt: undefined,
+            deactivatedAt: undefined,
+            trustedPublisher: true,
+            role: 'user',
+          }
+        }
+        return null
+      }),
+      query: vi.fn((table: string) => {
+        const globalStatsQuery = buildGlobalStatsQuery(table)
+        if (globalStatsQuery) return globalStatsQuery
+        const digestQuery = buildDigestQuery(table)
+        if (digestQuery) return digestQuery
+        if (table === 'skills') {
+          return {
+            withIndex: (name: string) => {
+              if (name === 'by_slug') return { unique: async () => null }
+              if (name === 'by_owner') {
+                return {
+                  order: () => ({
+                    take: async () => [],
+                  }),
+                }
+              }
+              throw new Error(`unexpected skills index ${name}`)
+            },
+          }
+        }
+        if (table === 'reservedSlugs') {
+          return {
+            withIndex: (name: string) => {
+              if (name === 'by_slug_active_deletedAt') {
+                return { order: () => ({ take: async () => [] }) }
+              }
+              throw new Error(`unexpected reservedSlugs index ${name}`)
+            },
+          }
+        }
+        if (table === 'skillVersionFingerprints') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_fingerprint') {
+                throw new Error(`unexpected skillVersionFingerprints index ${name}`)
+              }
+              return {
+                take: async () => [],
+              }
+            },
+          }
+        }
+        if (table === 'skillVersions') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_skill_version') {
+                throw new Error(`unexpected skillVersions index ${name}`)
+              }
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        if (table === 'skillBadges') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_skill') throw new Error(`unexpected skillBadges index ${name}`)
+              return {
+                take: async () => [],
+              }
+            },
+          }
+        }
+        if (table === 'skillEmbeddings') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_version') {
+                throw new Error(`unexpected skillEmbeddings index ${name}`)
+              }
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        if (table === 'skillSlugAliases') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        throw new Error(`unexpected table ${table}`)
+      }),
+      patch,
+      insert,
+      normalizeId: vi.fn((tableName: string, id: string) =>
+        String(id).startsWith(`${tableName}:`) ? id : null,
+      ),
+    }
+
+    const result = await insertVersionHandler(
+      { db, scheduler: { runAfter } } as never,
+      createPublishArgs({
+        staticScan: {
+          status: 'malicious',
+          reasonCodes: ['malicious.install_terminal_payload'],
+          findings: [
+            {
+              code: 'malicious.install_terminal_payload',
+              severity: 'critical',
+              file: 'SKILL.md',
+              line: 1,
+              message: 'Install prompt contains an obfuscated terminal payload.',
+              evidence: 'echo ... | base64 -D | bash',
+            },
+          ],
+          summary: 'Detected: malicious.install_terminal_payload',
+          engineVersion: 'v2.2.0',
+          checkedAt: Date.now(),
+        },
+      }) as never,
+    )
+
+    expect(result).toEqual({
+      skillId: 'skills:1',
+      versionId: 'skillVersions:1',
+      embeddingId: 'skillEmbeddings:1',
+    })
+    expect(insert).toHaveBeenCalledWith(
+      'skills',
+      expect.objectContaining({
+        moderationStatus: 'hidden',
+        moderationReason: 'scanner.static.malicious',
+        moderationVerdict: 'malicious',
+        moderationFlags: ['blocked.malware'],
+      }),
+    )
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      expect.anything(),
+      expect.objectContaining({
+        ownerUserId: 'users:owner',
+        slug: 'spam-skill',
+        reason: 'malicious.install_terminal_payload',
+      }),
+    )
+  })
+
+  it('keeps new publishes hidden while the uploader is under moderation', async () => {
+    const storedSkills = new Map<string, Record<string, unknown>>()
+    const storedDigests = new Map<string, Record<string, unknown>>()
+    const insert = vi.fn(async (table: string, value: Record<string, unknown>) => {
+      if (table === 'skills') {
+        storedSkills.set('skills:1', { _id: 'skills:1', _creationTime: 1, ...value })
+        return 'skills:1'
+      }
+      if (table === 'skillSearchDigest') {
+        storedDigests.set('skillSearchDigest:1', { _id: 'skillSearchDigest:1', ...value })
+        return 'skillSearchDigest:1'
+      }
+      if (table === 'skillVersions') return 'skillVersions:1'
+      if (table === 'skillEmbeddings') return 'skillEmbeddings:1'
+      if (table === 'embeddingSkillMap') return 'embeddingSkillMap:1'
+      if (table === 'skillVersionFingerprints') return 'skillVersionFingerprints:1'
+      throw new Error(`unexpected insert table ${table}`)
+    })
+    const patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
+      if (storedSkills.has(id)) {
+        storedSkills.set(id, { ...storedSkills.get(id), ...value })
+      }
+      const digest = Array.from(storedDigests.values()).find((entry) => entry.skillId === id)
+      if (digest) {
+        Object.assign(digest, value)
+      }
+    })
+    const db = {
+      get: vi.fn(async (tableOrId: string, maybeId?: string) => {
+        const key = String(maybeId ?? tableOrId)
+        if (storedSkills.has(key)) return storedSkills.get(key)
+        if (key === 'users:owner') {
+          return {
+            _id: 'users:owner',
+            _creationTime: Date.now() - 60 * 24 * 60 * 60 * 1000,
+            createdAt: Date.now() - 60 * 24 * 60 * 60 * 1000,
+            deletedAt: undefined,
+            deactivatedAt: undefined,
+            trustedPublisher: true,
+            requiresModerationAt: Date.now() - 1_000,
+            requiresModerationReason: 'needs review',
+            role: 'user',
+          }
+        }
+        return null
+      }),
+      query: vi.fn((table: string) => {
+        const globalStatsQuery = buildGlobalStatsQuery(table)
+        if (globalStatsQuery) return globalStatsQuery
+        const digestQuery = buildDigestQuery(table)
+        if (digestQuery) return digestQuery
+        if (table === 'skills') {
+          return {
+            withIndex: (name: string) => {
+              if (name === 'by_slug') return { unique: async () => null }
+              if (name === 'by_owner') {
+                return {
+                  order: () => ({
+                    take: async () => [],
+                  }),
+                }
+              }
+              throw new Error(`unexpected skills index ${name}`)
+            },
+          }
+        }
+        if (table === 'reservedSlugs') {
+          return {
+            withIndex: (name: string) => {
+              if (name === 'by_slug_active_deletedAt') {
+                return { order: () => ({ take: async () => [] }) }
+              }
+              throw new Error(`unexpected reservedSlugs index ${name}`)
+            },
+          }
+        }
+        if (table === 'skillVersionFingerprints') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_fingerprint') {
+                throw new Error(`unexpected skillVersionFingerprints index ${name}`)
+              }
+              return {
+                take: async () => [],
+              }
+            },
+          }
+        }
+        if (table === 'skillVersions') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_skill_version') {
+                throw new Error(`unexpected skillVersions index ${name}`)
+              }
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        if (table === 'skillBadges') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_skill') throw new Error(`unexpected skillBadges index ${name}`)
+              return {
+                take: async () => [],
+              }
+            },
+          }
+        }
+        if (table === 'skillEmbeddings') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_version') {
+                throw new Error(`unexpected skillEmbeddings index ${name}`)
+              }
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        if (table === 'skillSlugAliases') {
+          return {
+            withIndex: (name: string) => {
+              if (name !== 'by_slug') throw new Error(`unexpected skillSlugAliases index ${name}`)
+              return {
+                unique: async () => null,
+              }
+            },
+          }
+        }
+        throw new Error(`unexpected table ${table}`)
+      }),
+      patch,
+      insert,
+      normalizeId: vi.fn((tableName: string, id: string) =>
+        String(id).startsWith(`${tableName}:`) ? id : null,
+      ),
+    }
+
+    await insertVersionHandler(
+      { db, scheduler: { runAfter: vi.fn() } } as never,
+      createPublishArgs({
+        staticScan: {
+          status: 'clean',
+          reasonCodes: [],
+          findings: [],
+          summary: 'No suspicious patterns detected.',
+          engineVersion: 'v2.2.0',
+          checkedAt: Date.now(),
+        },
+      }) as never,
+    )
+
+    expect(insert).toHaveBeenCalledWith(
+      'skills',
+      expect.objectContaining({
+        moderationStatus: 'hidden',
+        moderationReason: 'user.moderation',
+        moderationNotes: 'needs review',
       }),
     )
   })

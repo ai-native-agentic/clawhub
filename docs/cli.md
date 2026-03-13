@@ -161,6 +161,19 @@ Stores your API token + cached registry URL.
 - Unhide a skill (owner, moderator, or admin).
 - Alias for `undelete`.
 
+### `skill rename <slug> <new-slug>`
+
+- Rename an owned skill and keep the previous slug as a redirect alias.
+- Calls `POST /api/v1/skills/{slug}/rename`.
+- `--yes` skips confirmation.
+
+### `skill merge <source-slug> <target-slug>`
+
+- Merge one owned skill into another owned skill.
+- The source slug stops listing publicly and becomes a redirect alias to the target.
+- Calls `POST /api/v1/skills/{sourceSlug}/merge`.
+- `--yes` skips confirmation.
+
 ### `transfer`
 
 - Ownership transfer workflow.

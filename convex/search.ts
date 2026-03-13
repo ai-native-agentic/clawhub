@@ -9,7 +9,7 @@ import type { HydratableSkill } from './lib/public'
 import { toPublicSkill, toPublicSoul, toPublicUser } from './lib/public'
 import { matchesExactTokens, tokenize } from './lib/searchText'
 import { isSkillSuspicious } from './lib/skillSafety'
-import { digestToHydratableSkill, digestToOwnerInfo } from './lib/skillSearchDigest'
+import { digestToHydratableSkill } from './lib/skillSearchDigest'
 
 type OwnerInfo = { handle: string | null; owner: ReturnType<typeof toPublicUser> | null }
 
@@ -252,12 +252,9 @@ export const hydrateResults = internalQuery({
           : await ctx.db.get(skillId)
         if (!skill || skill.softDeletedAt) return null
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null
-        const digestOwner = digest && digestToOwnerInfo(digest)
-        const resolved = digestOwner
-          ? { handle: digestOwner.ownerHandle, owner: digestOwner.owner }
-          : await getOwnerInfo(skill.ownerUserId)
+        const resolved = await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill || !ownerInfo.owner) return null
+        if (!publicSkill || !resolved.owner) return null
         return {
           embeddingId,
           skill: publicSkill,
@@ -309,17 +306,12 @@ export const lexicalFallbackSkills = internalQuery({
       .order('desc')
       .take(FALLBACK_SCAN_LIMIT)
 
-    // Build map from skillId → digest owner info for pre-resolved lookups
-    const digestOwnerMap = new Map<Id<'skills'>, ReturnType<typeof digestToOwnerInfo>>()
-
     for (const digest of recentDigests) {
       if (seenSkillIds.has(digest.skillId)) continue
       const skill = digestToHydratableSkill(digest)
       if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) continue
       seenSkillIds.add(digest.skillId)
       candidates.push(skill)
-      const ownerFromDigest = digestToOwnerInfo(digest)
-      if (ownerFromDigest) digestOwnerMap.set(digest.skillId, ownerFromDigest)
     }
 
     const matched = candidates.filter((skill) =>
@@ -331,12 +323,9 @@ export const lexicalFallbackSkills = internalQuery({
 
     const entries = await Promise.all(
       matched.map(async (skill) => {
-        const digestOwner = digestOwnerMap.get(skill._id)
-        const resolved = digestOwner
-          ? { handle: digestOwner.ownerHandle, owner: digestOwner.owner }
-          : await getOwnerInfo(skill.ownerUserId)
+        const resolved = await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill || !ownerInfo.owner) return null
+        if (!publicSkill || !resolved.owner) return null
         return {
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,
@@ -345,7 +334,7 @@ export const lexicalFallbackSkills = internalQuery({
         }
       }),
     )
-    const validEntries = entries.filter((entry): entry is SkillSearchEntry => entry !== null)
+    const validEntries = entries.filter(Boolean) as SkillSearchEntry[]
     if (validEntries.length === 0) return []
 
     const filtered = args.highlightedOnly

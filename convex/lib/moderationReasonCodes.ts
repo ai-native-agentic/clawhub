@@ -12,7 +12,7 @@ export type ModerationFinding = {
   evidence: string
 }
 
-export const MODERATION_ENGINE_VERSION = 'v2.1.1'
+export const MODERATION_ENGINE_VERSION = 'v2.2.0'
 
 export const REASON_CODES = {
   DANGEROUS_EXEC: 'suspicious.dangerous_exec',
@@ -25,11 +25,13 @@ export const REASON_CODES = {
   INJECTION_INSTRUCTIONS: 'suspicious.prompt_injection_instructions',
   SUSPICIOUS_INSTALL_SOURCE: 'suspicious.install_untrusted_source',
   MANIFEST_PRIVILEGED_ALWAYS: 'suspicious.privileged_always',
+  MALICIOUS_INSTALL_PROMPT: 'malicious.install_terminal_payload',
   KNOWN_BLOCKED_SIGNATURE: 'malicious.known_blocked_signature',
 } as const
 
 const MALICIOUS_CODES = new Set<string>([
   REASON_CODES.CRYPTO_MINING,
+  REASON_CODES.MALICIOUS_INSTALL_PROMPT,
   REASON_CODES.KNOWN_BLOCKED_SIGNATURE,
 ])
 
