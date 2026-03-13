@@ -363,8 +363,8 @@ export const updateGlobalStatsAction = internalAction({
 })
 
 /**
- * @deprecated Use updateGlobalStatsAction instead. Kept for backward compat
- * until the cron is updated.
+ * @deprecated Use updateGlobalStatsAction instead.
+ * Kept as a manual emergency fallback only — do not re-add to crons.
  */
 export const updateGlobalStatsInternal = internalMutation({
   args: {},
