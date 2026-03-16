@@ -2586,7 +2586,7 @@ export const listPublicPageV2 = query({
   },
 })
 
-/** Identical to listPublicPageV2 — used to distinguish new client traffic from stale tabs. */
+/** V3 — kept intact for remaining subscribers during migration to V4. */
 export const listPublicPageV3 = query({
   args: {
     paginationOpts: paginationOptsValidator,
@@ -2672,13 +2672,21 @@ export const listPublicPageV3 = query({
   },
 })
 
-const UNDEF_SENTINEL = '__UNDEF__'
 function encodeIndexKey(key: IndexKey): string {
-  return JSON.stringify(key.map((v) => (v === undefined ? UNDEF_SENTINEL : v)))
+  return JSON.stringify(key.map((v) => (v === undefined ? { __undef: 1 } : v)))
 }
-function decodeIndexKey(cursor: string): IndexKey {
-  const arr = JSON.parse(cursor) as unknown[]
-  return arr.map((v) => (v === UNDEF_SENTINEL ? undefined : (v as Value)))
+function decodeIndexKey(cursor: string): IndexKey | null {
+  try {
+    const arr = JSON.parse(cursor) as unknown[]
+    if (!Array.isArray(arr)) return null
+    return arr.map((v) =>
+      v !== null && typeof v === 'object' && '__undef' in (v as Record<string, unknown>)
+        ? undefined
+        : (v as Value),
+    )
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -2719,8 +2727,9 @@ export const listPublicPageV4 = query({
       ? [undefined, false]
       : [undefined]
 
-    const isFirstPage = !args.cursor
-    const startIndexKey = isFirstPage ? eqPrefix : decodeIndexKey(args.cursor!)
+    const decodedCursor = args.cursor ? decodeIndexKey(args.cursor) : null
+    const isFirstPage = !decodedCursor
+    const startIndexKey: IndexKey = decodedCursor ?? eqPrefix
 
     // For highlightedOnly, over-fetch since it's a JS filter
     const fetchSize = args.highlightedOnly ? numItems * 2 : numItems
@@ -2795,11 +2804,17 @@ export const listPublicPageV4 = query({
       })
     }
 
-    // Encode cursor from the last accepted item's index key
-    const nextCursor =
-      finalHasMore && trimmed.length > 0
-        ? encodeIndexKey(trimmed[trimmed.length - 1].indexKey)
-        : null
+    // Encode cursor from the last accepted item's index key.
+    // If no items were accepted but hasMore is true, advance the cursor
+    // to the last fetched position so the next call doesn't restart.
+    let nextCursor: string | null = null
+    if (finalHasMore) {
+      if (trimmed.length > 0) {
+        nextCursor = encodeIndexKey(trimmed[trimmed.length - 1].indexKey)
+      } else if (lastFetchKey && lastFetchKey.length > 0) {
+        nextCursor = encodeIndexKey(lastFetchKey)
+      }
+    }
 
     return { page: items, hasMore: finalHasMore, nextCursor }
   },
