@@ -2681,17 +2681,31 @@ export const listPublicPageV2 = query({
       args,
     )
 
-    // Build a map from skillId → pre-resolved owner info from digest rows
-    const preResolvedOwners = new Map<
-      Id<'skills'>,
-      { ownerHandle: string | null; owner: ReturnType<typeof toPublicUser> | null }
-    >()
+    // Build response directly from digest — no extra table reads.
+    // This keeps the query's read set to skillSearchDigest only, so writes
+    // to skills/users/skillVersions never invalidate the cache.
+    const filteredMap = new Map(filteredPage.map((s) => [s._id, s]))
+    const items: PublicSkillEntry[] = []
     for (const digest of result.page) {
-      const info = digestToOwnerInfo(digest)
-      if (info) preResolvedOwners.set(digest.skillId, info)
+      const hydratable = filteredMap.get(digest.skillId)
+      if (!hydratable) continue
+      const publicSkill = toPublicSkill(hydratable)
+      if (!publicSkill) continue
+      const ownerInfo = digestToOwnerInfo(digest)
+      if (!ownerInfo?.owner) continue
+      const latestVersion = digest.latestVersionSummary
+        ? toPublicSkillListVersionFromSummary(
+            digest.latestVersionSummary,
+            digest.latestVersionId,
+          )
+        : null
+      items.push({
+        skill: publicSkill,
+        latestVersion,
+        ownerHandle: ownerInfo.ownerHandle,
+        owner: ownerInfo.owner,
+      })
     }
-
-    const items = await buildPublicSkillEntries(ctx, filteredPage, { preResolvedOwners })
     return { ...result, page: items }
   },
 })
